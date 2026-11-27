@@ -1,0 +1,63 @@
+
+{
+  "schema_version": 1,
+  "project": "QTESHAT-GAMING-RUNTIME",
+  "runtime_version": "0.1.0",
+  "platform": {
+    "os": "android",
+    "architecture": "arm64-v8a",
+    "abi": "arm64-v8a"
+  },
+  "status": "development",
+  "components": [
+    {
+      "id": "linux-rootfs",
+      "name": "Linux ARM64 Root Filesystem",
+      "version": null,
+      "status": "planned",
+      "required": true,
+      "download_url": null,
+      "sha256": null
+    },
+    {
+      "id": "box64",
+      "name": "Box64",
+      "version": null,
+      "status": "planned",
+      "required": true,
+      "download_url": null,
+      "sha256": null
+    },
+    {
+      "id": "wine",
+      "name": "Wine",
+      "version": null,
+      "status": "planned",
+      "required": true,
+      "download_url": null,
+      "sha256": null
+    },
+    {
+      "id": "dxvk",
+      "name": "DXVK",
+      "version": null,
+      "status": "planned",
+      "required": false,
+      "download_url": null,
+      "sha256": null
+    },
+    {
+      "id": "vkd3d-proton",
+      "name": "VKD3D-Proton",
+      "version": null,
+      "status": "planned",
+      "required": false,
+      "download_url": null,
+      "sha256": null
+    }
+  ],
+  "security": {
+    "verify_sha256": true,
+    "reject_missing_checksum": true
+  }
+}
