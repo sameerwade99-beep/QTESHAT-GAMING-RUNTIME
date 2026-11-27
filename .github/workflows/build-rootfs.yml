@@ -1,0 +1,96 @@
+name: Build and publish Ubuntu ARM64 runtime
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-rootfs.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: public-rootfs-build
+  cancel-in-progress: false
+
+jobs:
+  rootfs:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - name: Checkout runtime repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install build and rootfs tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential binutils cmake ninja-build python3 git file \
+            debootstrap gcc-x86-64-linux-gnu libc6-dev-amd64-cross
+
+      - name: Fetch exact upstream Box64 source commit
+        env:
+          BOX64_COMMIT: 2f130fab1d6e1a4ee8a71dc60cfdfcc839ad192a
+        run: |
+          git init box64-src
+          git -C box64-src remote add origin https://github.com/ptitSeb/box64.git
+          git -C box64-src fetch --depth=1 origin "$BOX64_COMMIT"
+          git -C box64-src checkout --detach FETCH_HEAD
+          test "$(git -C box64-src rev-parse HEAD)" = "$BOX64_COMMIT"
+
+      - name: Build Box64 for ARM64
+        run: |
+          cmake -S box64-src -B box64-build -G Ninja \
+            -DARM64=ON -DARM_DYNAREC=ON -DBAD_SIGNAL=ON \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          cmake --build box64-build --parallel 2
+          test -x box64-build/box64
+          readelf -h box64-build/box64 | grep -q 'Machine:.*AArch64'
+
+      - name: Create Ubuntu 24.04 ARM64 rootfs with amd64 libraries
+        run: |
+          sudo debootstrap --arch=arm64 --variant=minbase noble rootfs http://ports.ubuntu.com/ubuntu-ports
+          sudo rm -f rootfs/etc/apt/sources.list
+          sudo rm -f rootfs/etc/apt/sources.list.d/*.list rootfs/etc/apt/sources.list.d/*.sources
+          sudo tee rootfs/etc/apt/sources.list.d/qteshat-arm64.list >/dev/null <<'EOF'
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble main universe
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-updates main universe
+          deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports noble-security main universe
+          EOF
+          sudo chroot rootfs /usr/bin/dpkg --add-architecture amd64
+          sudo tee rootfs/etc/apt/sources.list.d/qteshat-amd64.list >/dev/null <<'EOF'
+          deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble main universe
+          deb [arch=amd64] http://archive.ubuntu.com/ubuntu noble-updates main universe
+          deb [arch=amd64] http://security.ubuntu.com/ubuntu noble-security main universe
+          EOF
+          sudo chroot rootfs /usr/bin/apt-get update
+          sudo chroot rootfs /usr/bin/apt-get install --yes --no-install-recommends \
+            ca-certificates libc6:amd64 libgcc-s1:amd64 libstdc++6:amd64
+          sudo chroot rootfs /usr/bin/apt-get clean
+          sudo rm -rf rootfs/var/lib/apt/lists/* rootfs/var/cache/apt/archives/*
+          sudo mkdir -p rootfs/lib64
+
+      - name: Build and run dynamically linked x86_64 smoke test
+        run: |
+          cat > qteshat-dynamic-smoke.c <<'EOF'
+          #include <stdio.h>
+          int main(void) { puts("QTESHAT_BOX64_DYNAMIC_ROOTFS_OK"); return 0; }
+          EOF
+          x86_64-linux-gnu-gcc -O2 -Wl,--dynamic-linker=/lib64/ld-linux-x86-64.so.2 -o qteshat-dynamic-smoke qteshat-dynamic-smoke.c
+          BOX64_LD_LIBRARY_PATH="$PWD/rootfs/lib/x86_64-linux-gnu:$PWD/rootfs/usr/lib/x86_64-linux-gnu" \
+            box64-build/box64 ./qteshat-dynamic-smoke 2>&1 | tee rootfs-smoke.log
+          grep -F 'QTESHAT_BOX64_DYNAMIC_ROOTFS_OK' rootfs-smoke.log
+
+      - name: Package and publish public runtime release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sudo tar --numeric-owner --xattrs --acls -czf qteshat-ubuntu-noble-arm64-rootfs.tar.gz -C rootfs .
+          sha256sum qteshat-ubuntu-noble-arm64-rootfs.tar.gz > qteshat-ubuntu-noble-arm64-rootfs.tar.gz.sha256
+          sudo chroot rootfs /usr/bin/dpkg-query -W -f='${Package}=${Version}:${Architecture}\\n' | sort > rootfs-packages.txt
+          TAG="ubuntu-noble-arm64-${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" qteshat-ubuntu-noble-arm64-rootfs.tar.gz qteshat-ubuntu-noble-arm64-rootfs.tar.gz.sha256 rootfs-packages.txt \
+            --repo "${GITHUB_REPOSITORY}" --target "${GITHUB_SHA}" \
+            --title "QTESHAT Ubuntu Noble ARM64 Runtime ${GITHUB_RUN_NUMBER}" \
+            --notes "Public Ubuntu 24.04 ARM64 rootfs with amd64 glibc libraries. Box64 dynamic smoke test passed on ARM64 GitHub runner. Android execution remains to be validated." --prerelease
